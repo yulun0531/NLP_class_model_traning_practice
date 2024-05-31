@@ -60,7 +60,6 @@ try:
         subject = subject_header[0]
 except Exception as e:
     print("解析邮件标题时出错:", e)
-print(msg.walk())
 # 读取邮件正文
 for part in msg.walk():
     content_type = part.get_content_type()
