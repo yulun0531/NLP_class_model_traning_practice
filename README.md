@@ -1,0 +1,2 @@
+# NLP_class_model_traning_practice
+NLP課程專案
