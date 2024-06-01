@@ -1,89 +1,127 @@
 import spacy
-import random
+from spacy.training import Example
 from sklearn.metrics import classification_report
+import random
 
-# 載入預訓練的英文模型
-nlp = spacy.load("en_core_web_md")  # 使用帶有詞向量的英文模型
-
-# 添加 NER 管道
-if "ner" not in nlp.pipe_names:
-    ner = nlp.create_pipe("ner")
-    nlp.add_pipe('ner', last=True)
-else:
-    ner = nlp.get_pipe("ner")
-
-# 讀取 CoNLL 格式數據
 def read_conll(file_path):
-    with open(file_path, "r", encoding="utf-8") as f:
-        sentences = []
-        tokens = []
-        ner_tags = []
-        for line in f:
-            if line.strip() == "":
-                if tokens:
-                    sentences.append((tokens, ner_tags))
-                    tokens = []
-                    ner_tags = []
-            else:
-                parts = line.strip().split()
-                if len(parts) == 2:
-                    token, tag = parts
-                    tokens.append(token)
-                    ner_tags.append(tag)
-                else:
-                    print("Skipping invalid line:", line)
-        if tokens:
-            sentences.append((tokens, ner_tags))
-    return sentences
+    """读取CONLL格式的数据并返回训练数据"""
+    with open(file_path, 'r', encoding='utf-8') as file:
+        lines = file.readlines()
+    
+    data = []
+    sentence = []
+    for line in lines:
+        if line.strip() == '':
+            if sentence:
+                data.append(sentence)
+                sentence = []
+        else:
+            word, tag = line.strip().split()
+            sentence.append((word, tag))
+    if sentence:
+        data.append(sentence)
+    
+    return data
 
-# 讀取訓練數據
-train_data_a = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/a.conll")
-train_data_b = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/b.conll")
-train_data_e = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/e.conll")
+def convert_iob_to_spacy_format(data):
+    """将IOB格式的数据转换为spaCy格式"""
+    spacy_data = []
+    for sentence in data:
+        words = [token[0] for token in sentence]
+        entities = []
+        start = 0
+        end = 0
+        for word, tag in sentence:
+            end = start + len(word)
+            if tag != 'O':
+                entity_label = tag.split('-')[1]
+                if tag.startswith('B-'):
+                    entities.append((start, end, entity_label))
+            start = end + 1  # Adding 1 for the space between words
+        spacy_data.append((words, {'entities': entities}))
+    return spacy_data
 
-# 將訓練數據合併到一個列表中
-train_data = train_data_a #+ train_data_b + train_data_e
+def create_training_data(data):
+    """创建训练数据"""
+    nlp = spacy.blank('en')
+    db = DocBin()
+    for text, annotations in data:
+        doc = nlp.make_doc(" ".join(text))
+        example = Example.from_dict(doc, annotations)
+        db.add(example.reference)
+    return db
 
-# 讀取測試數據
-test_data_f = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/f.conll")
-#test_data_g = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/g.conll")
-#test_data_h = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/h.conll")
+def train_model(train_data):
+    """训练NER模型"""
+    nlp = spacy.blank("en")
+    if "ner" not in nlp.pipe_names:
+        ner = nlp.add_pipe("ner")
+    else:
+        ner = nlp.get_pipe("ner")
+    
+    # 添加标签
+    for _, annotations in train_data:
+        for ent in annotations.get("entities"):
+            ner.add_label(ent[2])
+    
+    # 配置训练参数
+    nlp.begin_training()
+    optimizer = nlp.resume_training()
+    move_names = list(ner.move_names)
+    other_pipes = [pipe for pipe in nlp.pipe_names if pipe != "ner"]
+    
+    # 开始训练
+    with nlp.disable_pipes(*other_pipes):
+        for iteration in range(10):  # 设置迭代次数为10
+            random.shuffle(train_data)
+            losses = {}
+            for text, annotations in train_data:
+                doc = nlp.make_doc(" ".join(text))
+                example = Example.from_dict(doc, annotations)
+                nlp.update([example], drop=0.5, losses=losses, sgd=optimizer)
+            print(f"Iteration {iteration}: {losses}")
 
-# 將測試數據合併到一個列表中
-test_data = train_data_a + test_data_f #+ test_data_g + test_data_h
+    return nlp
 
-# 添加標籤到 NER
-added_labels = set()
-for _, annotations in train_data:
-    for ent in annotations:
-        if ent not in added_labels:
-            ner.add_label(ent)
-            added_labels.add(ent)
+def evaluate_model(nlp, test_data):
+    """评估NER模型并生成classification_report"""
+    y_true = []
+    y_pred = []
 
-# 開始訓練
-optimizer = nlp.create_optimizer()
-for itn in range(10):
-    random.shuffle(train_data)
-    losses = {}
-    for texts, annotations in train_data:
-        doc = nlp.make_doc(" ".join(texts))
-        example = spacy.training.example.Example.from_dict(doc, {"entities": annotations})
-        nlp.update([example], drop=0.5, losses=losses)
-    print(losses)
+    for text, annotations in test_data:
+        doc = nlp(" ".join(text))
+        true_labels = annotations['entities']
+        pred_labels = [(ent.start_char, ent.end_char, ent.label_) for ent in doc.ents]
 
-# 評估模型
-true_labels = []
-pred_labels = []
-for texts, annotations in test_data:
-    doc = nlp(" ".join(texts))
-    if doc.ents:  # 檢查是否有預測的命名實體
-        pred_labels.extend([ent.label_ for ent in doc.ents])
-    else:  # 如果沒有預測的命名實體，則將一個預設值添加到 pred_labels 中
-        pred_labels.append("O")  # 這裡使用 "O" 作為預設值，你可以根據需要修改
-    true_labels.extend(annotations)
+        # 将标签转化为IOB格式
+        true_iob = ['O'] * len(doc)
+        for start, end, label in true_labels:
+            true_iob[start:end] = ['B-' + label] + ['I-' + label] * (end - start - 1)
+        
+        pred_iob = ['O'] * len(doc)
+        for start, end, label in pred_labels:
+            pred_iob[start:end] = ['B-' + label] + ['I-' + label] * (end - start - 1)
+        
+        y_true.extend(true_iob)
+        y_pred.extend(pred_iob)
 
-# 打印預測標籤的數量
-print("Length of predicted labels:", len(pred_labels))
+    # 打印分类报告
+    print(classification_report(y_true, y_pred))
 
-# 計算評估指標並打印結果
-print(classification_report(true_labels, pred_labels))
+def main():
+    # 读取并转换训练数据
+    train_data_a = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/a.conll")
+    spacy_train_data = convert_iob_to_spacy_format(train_data_a)
+    
+    # 训练模型
+    nlp = train_model(spacy_train_data)
+    
+    # 读取并转换测试数据
+    test_data_f = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/f.conll")
+    spacy_test_data = convert_iob_to_spacy_format(test_data_f)
+    
+    # 评估模型
+    evaluate_model(nlp, spacy_test_data)
+
+if __name__ == "__main__":
+    main()
