@@ -2,16 +2,17 @@
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
 import tensorflow.keras as keras
-from tensorflow.keras import layers, optimizers
+from keras import layers, optimizers  # 修改此行
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_recall_fscore_support  # 合併 import
+from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
 import pandas as pd
-from sklearn.metrics import precision_recall_fscore_support
 import time
 import matplotlib.pyplot as plt
 import re
 import os
+from gensim.models import Word2Vec
 
 #-------------------数据预处理----------------------
 
@@ -43,10 +44,7 @@ def getAllText(pathList):
 
 # 0 为垃圾邮件 1 为正常邮件
 def transform_label(label_list):
-    list = []
-    for x in label_list:
-        list.append(0 if x == "spam" else 1)
-    return list
+    return [0 if x == "spam" else 1 for x in label_list]
 
 #-------------------文本分类----------------------
 class TextClassification():
@@ -78,11 +76,23 @@ class TextClassification():
         self.num_classes = np.unique(label_list).shape[0]
 
     def prepareData(self):
-        # 将文本转换为整数序列
-        tokenizer = keras.preprocessing.text.Tokenizer(num_words=self.vocab_size, oov_token="<OOV>")
-        tokenizer.fit_on_texts(self.content_list)
-        self.train_X = keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(self.train_content_list), maxlen=self.seq_length, padding='post')
-        self.test_X = keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(self.test_content_list), maxlen=self.seq_length, padding='post')
+        # 使用TF-IDF提取特征
+        self.vectorizer = TfidfVectorizer(max_features=self.vocab_size)
+        self.vectorizer.fit(self.content_list)
+        self.train_X_tfidf = self.vectorizer.transform(self.train_content_list).toarray()
+        self.test_X_tfidf = self.vectorizer.transform(self.test_content_list).toarray()
+
+        # 训练Word2Vec模型
+        self.w2v_model = Word2Vec([text.split() for text in self.content_list], vector_size=self.embedding_dim, window=5, min_count=1, workers=4)
+        self.w2v_model.train([text.split() for text in self.content_list], total_examples=len(self.content_list), epochs=10)
+
+        # 转换Word2Vec特征
+        self.train_X_w2v = np.array([np.mean([self.w2v_model.wv[word] for word in text.split() if word in self.w2v_model.wv] or [np.zeros(self.embedding_dim)], axis=0) for text in self.train_content_list])
+        self.test_X_w2v = np.array([np.mean([self.w2v_model.wv[word] for word in text.split() if word in self.w2v_model.wv] or [np.zeros(self.embedding_dim)], axis=0) for text in self.test_content_list])
+
+        # 合并TF-IDF和Word2Vec特征
+        self.train_X = np.hstack((self.train_X_tfidf, self.train_X_w2v))
+        self.test_X = np.hstack((self.test_X_tfidf, self.test_X_w2v))
 
         self.labelEncoder = LabelEncoder()
         self.labelEncoder.fit(self.train_label_list)
@@ -96,8 +106,7 @@ class TextClassification():
     # 搭建卷积神经网络模型
     def buildModel(self):
         self.model = tf.keras.Sequential([
-            layers.Embedding(input_dim=self.vocab_size, output_dim=self.embedding_dim, input_length=self.seq_length),
-            layers.GlobalAveragePooling1D(),
+            layers.Input(shape=(self.train_X.shape[1],)),  # 输入层
             layers.Dense(self.hidden_dim, activation=tf.nn.relu),  # 全连接层
             layers.Dropout(rate=self.dropout_keep_prob),  # Dropout层
             layers.Dense(self.num_classes, activation=tf.nn.softmax)  # 输出层
@@ -142,9 +151,9 @@ class TextClassification():
     def predict(self, content_list):
         if type(content_list) == str:
             content_list = [content_list]
-        tokenizer = keras.preprocessing.text.Tokenizer(num_words=self.vocab_size, oov_token="<OOV>")
-        tokenizer.fit_on_texts(self.content_list)
-        batch_X = keras.preprocessing.sequence.pad_sequences(tokenizer.texts_to_sequences(content_list), maxlen=self.seq_length, padding='post')
+        batch_X_tfidf = self.vectorizer.transform(content_list).toarray()
+        batch_X_w2v = np.array([np.mean([self.w2v_model.wv[word] for word in text.split() if word in self.w2v_model.wv] or [np.zeros(self.embedding_dim)], axis=0) for text in content_list])
+        batch_X = np.hstack((batch_X_tfidf, batch_X_w2v))
         predict_y = self.model.predict(batch_X)
         predict_y = np.argmax(predict_y, axis=1)
         predict_label_list = self.labelEncoder.inverse_transform(predict_y)
@@ -179,7 +188,7 @@ class TextClassification():
         print(reportTable)
         
     def eval_model(self, y_true, y_pred, labels):
-        p, r, f1, s = precision_recall_fscore_support(y_true, y_pred)
+        p, r, f1,        s = precision_recall_fscore_support(y_true, y_pred)
         df = pd.DataFrame(data={'precision': p, 'recall': r, 'f1-score': f1},
                           index=labels)
         df['support'] = s
@@ -203,3 +212,5 @@ if __name__ == "__main__":
 
     model.printConfusionMatrix()
     model.printReportTable()
+
+
