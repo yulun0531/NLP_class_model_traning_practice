@@ -75,8 +75,8 @@ def main():
     nlp = spacy.load("./model")
 
     # 读取并转换测试数据
-    test_data_f = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/f.conll")
-    train_data_g = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/g.conll")
+    test_data_f = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/a.conll")
+    train_data_g = read_conll("entity-recognition-datasets/data/BTC/CONLL-format/data/b.conll")
     spacy_test_data = convert_iob_to_spacy_format(test_data_f+train_data_g)
     
     # 评估模型
