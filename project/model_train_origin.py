@@ -1,4 +1,3 @@
-# 导入程序运行必需的库
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
 import tensorflow.keras as keras
@@ -16,23 +15,23 @@ import os
 
 # 根据路径打开文件并提取每个邮件中的文本
 def getMailText(mailPath):
-    mail = open(mailPath, "r", encoding="gb2312", errors='ignore')
-    mailTextList = [text for text in mail]
-    # 去除邮件头
-    XindexList = [mailTextList.index(i) for i in mailTextList if re.match("[a-zA-Z0-9]", i)]
-    textBegin = max(XindexList) + 1
-    text = str(''.join(mailTextList[textBegin:]))  # 将文本内容转换为字符串
-    # 去空格分隔符及一些特殊字符
-    text = re.sub('\s+', '', re.sub("\u3000", "", re.sub("\n", "", text)))
+    with open(mailPath, "r", encoding="gb2312", errors='ignore') as mail:
+        mailTextList = [text for text in mail]
+        # 去除邮件头
+        XindexList = [mailTextList.index(i) for i in mailTextList if re.match("[a-zA-Z0-9]", i)]
+        textBegin = max(XindexList) + 1
+        text = ''.join(mailTextList[textBegin:])  # 将文本内容转换为字符串
+        # 去空格分隔符及一些特殊字符
+        text = re.sub('\s+', '', re.sub("\u3000", "", re.sub("\n", "", text)))
     return text
 
 # 通过index文件获取所有文件路径及标签值
 def getPaths_Labels():
-    targets = open("./trec06p/full/index", "r", encoding="gb2312", errors='ignore')
-    targetList = [t for t in targets]
-    newTargetList = [target.split() for target in targetList if len(target.split()) == 2]  
-    pathList = [path[1].replace('..', './trec06p') for path in newTargetList]
-    label_list = [label[0] for label in newTargetList]
+    with open("./trec06p/full/index", "r", encoding="gb2312", errors='ignore') as targets:
+        targetList = [t for t in targets]
+        newTargetList = [target.split() for target in targetList if len(target.split()) == 2]  
+        pathList = [path[1].replace('..', './trec06p') for path in newTargetList]
+        label_list = [label[0] for label in newTargetList]
     return pathList, label_list
 
 # 获取所有文本
@@ -42,11 +41,20 @@ def getAllText(pathList):
 
 # 0 为垃圾邮件 1 为正常邮件
 def transform_label(label_list):
-    list = [0 if label == "spam" else 1 for label in label_list]
-    return list
+    return [0 if label == "spam" else 1 for label in label_list]
 
 #-------------------文本分类----------------------
 class TextClassification():
+    def __init__(self, content_list, label_list):
+        self.config()
+        train_X, test_X, train_y, test_y = train_test_split(content_list, label_list)
+        self.train_content_list = train_X
+        self.train_label_list = train_y
+        self.test_content_list = test_X
+        self.test_label_list = test_y
+        self.num_classes = len(np.unique(label_list))
+        self.prepareData()
+
     # 为超参数赋值
     def config(self):
         self.seq_length = 600    # 允许句子最大长度
@@ -57,21 +65,6 @@ class TextClassification():
         self.batch_size = 128   # 每批训练大小
         self.num_iteration = 5000 # 迭代次数
         self.print_per_batch = self.num_iteration // 100 # 每迭代5000/100=50次打印一次
-
-    def __init__(self, content_list, label_list):
-        self.config()
-        train_X, test_X, train_y, test_y = train_test_split(content_list, label_list)
-        self.train_content_list = train_X
-        self.train_label_list = train_y
-        self.test_content_list = test_X
-        self.test_label_list = test_y
-        self.content_list = self.train_content_list + self.test_content_list
-        self.autoGetNumClasses()
-        self.prepareData()
-
-    def autoGetNumClasses(self):
-        label_list = self.train_label_list + self.test_label_list
-        self.num_classes = np.unique(label_list).shape[0]
 
     def prepareData(self):
         self.labelEncoder = LabelEncoder()
@@ -87,14 +80,13 @@ class TextClassification():
     def buildModel(self):
         vocab_size = 10000  # 设置词汇表大小，具体根据数据集的情况来定
         self.model = tf.keras.Sequential([
-            layers.Input(shape=(self.seq_length,), dtype="string"),  # 输入层
+            layers.Input(shape=(self.seq_length,), dtype="int32"),  # 输入层
             layers.Embedding(input_dim=vocab_size, output_dim=self.embedding_dim, input_length=self.seq_length),  # 词嵌入层
             layers.GlobalAveragePooling1D(),
             layers.Dense(self.hidden_dim, activation=tf.nn.relu),  # 全连接层
             layers.Dropout(rate=self.dropout_keep_prob),  # Dropout层
             layers.Dense(self.num_classes, activation=tf.nn.softmax)  # 输出层
         ])
-
 
     def trainModel(self):
         self.buildModel()
@@ -103,9 +95,9 @@ class TextClassification():
                         metrics=['accuracy'])
 
         # 将文本数据转换为序列化的序号
-        tokenizer = tf.keras.preprocessing.text.Tokenizer()
-        tokenizer.fit_on_texts(self.train_content_list)
-        train_sequences = tokenizer.texts_to_sequences(self.train_content_list)
+        self.tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=5000)  # 设置 num_words 参数
+        self.tokenizer.fit_on_texts(self.train_content_list)
+        train_sequences = self.tokenizer.texts_to_sequences(self.train_content_list)
         train_X = tf.keras.preprocessing.sequence.pad_sequences(train_sequences, maxlen=self.seq_length, padding='post')
 
         # 将标签数据转换为 one-hot 编码
@@ -138,20 +130,18 @@ class TextClassification():
                 print("Epoch %d ==> Loss: %.5f, Accuracy: %.4f, Time: %.2f seconds" % (i, history.history['loss'][i], acc, (duration / self.num_iteration) * i))
 
 
-
     # 定义预测函数
     def predict(self, content_list):
         if isinstance(content_list, str):
             content_list = [content_list]
         # 将文本数据转换为序列化的序号
-        tokenizer = tf.keras.preprocessing.text.Tokenizer()
-        tokenizer.fit_on_texts(content_list)
-        sequences = tokenizer.texts_to_sequences(content_list)
+        sequences = self.tokenizer.texts_to_sequences(content_list)
         X = tf.keras.preprocessing.sequence.pad_sequences(sequences, maxlen=self.seq_length, padding='post')
         predict_y = self.model.predict(X)
         predict_y = np.argmax(predict_y, axis=1)
         predict_label_list = self.labelEncoder.inverse_transform(predict_y)
         return predict_label_list
+
 
     # 定义predictAll，分批预测
     def predictAll(self):
@@ -167,8 +157,8 @@ class TextClassification():
     def printConfusionMatrix(self):
         predict_label_list = self.predictAll()
         df = pd.DataFrame(confusion_matrix(self.test_label_list, predict_label_list),
-                     columns=self.labelEncoder.classes_,
-                     index=self.labelEncoder.classes_)
+                          columns=self.labelEncoder.classes_,
+                          index=self.labelEncoder.classes_)
         print('\n Confusion Matrix:')
         print(df)
 
@@ -176,11 +166,11 @@ class TextClassification():
     def printReportTable(self):
         predict_label_list = self.predictAll()
         reportTable = self.eval_model(self.test_label_list,
-                                 predict_label_list,
-                                 self.labelEncoder.classes_)
+                                      predict_label_list,
+                                      self.labelEncoder.classes_)
         print('\n Report Table:')
         print(reportTable)
-        
+
     def eval_model(self, y_true, y_pred, labels):
         p, r, f1, s = precision_recall_fscore_support(y_true, y_pred)
         df = pd.DataFrame(data={'Precision': p, 'Recall': r, 'F1-score': f1},
@@ -206,4 +196,3 @@ if __name__ == "__main__":
 
     model.printConfusionMatrix()
     model.printReportTable()
-
